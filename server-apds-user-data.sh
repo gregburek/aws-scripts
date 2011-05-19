@@ -32,6 +32,7 @@ mkdir /opt/html/
 sudo chmod -R 777 /opt/
 
 useradd -m -p saB/M7hY0p7Bw gregburek -s /usr/bin/zsh
+passwd -e gregburek
 usermod -a -G adm,admin gregburek
 echo "gregburek  ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
