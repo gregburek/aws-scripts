@@ -31,6 +31,3 @@ sudo easy_install pip
 sudo pip install virtualenvwrapper
 echo 'export WORKON_HOME=$HOME/.virtualenvs' >> ~/.zprofile
 echo 'source /usr/local/bin/virtualenvwrapper.sh' >> ~/.zprofile
-source ~/.zprofile
-mkvirtualenv --no-site-packages apds
-pip install -U django south
