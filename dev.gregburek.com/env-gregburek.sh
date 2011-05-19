@@ -20,7 +20,7 @@ curl https://github.com/posterous/vim/raw/master/vimrc.local > ~/.vimrc.local
 # Setup Oh My zsh! shell
 wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/dev.gregburek.com/zsh.tar.gz -O ~/zsh.tar.gz
 tar xzf ~/zsh.tar.gz
-git comlone git://github.com/robbyrussell/oh-my-zsh.git ~/.oh-my-zsh
+git clone git://github.com/robbyrussell/oh-my-zsh.git ~/.oh-my-zsh
 ln -s ~/.zsh/zshrc ~/.zshrc
 
 # Setup byobu to run at login and screen to use ^O as the command key
