@@ -35,7 +35,7 @@ useradd -m -p saB/M7hY0p7Bw gregburek -s /usr/bin/zsh
 usermod -a -G adm,admin gregburek
 echo "gregburek  ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-su - gregburek -c "wget http://50.19.99.157/gregburek-setup.sh -O - | sh"
+su - gregburek -c "wget https://github.com/gregburek/aws-scripts/raw/master/dev.gregburek.com/env-gregburek.sh -O - | sh"
 
 exit 0
 

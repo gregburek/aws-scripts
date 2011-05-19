@@ -8,7 +8,7 @@
 
 # Setup ssh keys
 mkdir ~/.ssh
-wget http://50.19.99.157/id_rsa.pub -O ~/.ssh/airy-greg.pub
+wget https://github.com/gregburek/aws-scripts/raw/master/dev.gregburek.com/id_rsa.pub -O ~/.ssh/airy-greg.pub
 cat ~/.ssh/airy-greg.pub >> ~/.ssh/authorized_keys
 chmod 700 ~/.ssh;
 chmod 600 ~/.ssh/authorized_keys
@@ -18,7 +18,7 @@ curl https://github.com/gregburek/janus/raw/master/bootstrap.sh -o - | sh
 curl https://github.com/posterous/vim/raw/master/vimrc.local > ~/.vimrc.local
 
 # Setup Oh My zsh! shell
-wget http://50.19.99.157/zsh.tar.gz -O ~/zsh.tar.gz
+wget https://github.com/gregburek/aws-scripts/raw/master/dev.gregburek.com/zsh.tar.gz -O ~/zsh.tar.gz
 tar xzf ~/zsh.tar.gz
 git clone git://github.com/robbyrussell/oh-my-zsh.git ~/.oh-my-zsh
 ln -s ~/.zsh/zshrc ~/.zshrc
