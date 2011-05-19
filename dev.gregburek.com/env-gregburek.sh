@@ -25,3 +25,12 @@ ln -s ~/.zsh/zshrc ~/.zshrc
 
 # Setup screen to run at login and screen to use ^O as the command key
 wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/dev.gregburek.com/zprofile -O ~/.zprofile
+
+# Setup python tools
+sudo easy_install pip
+sudo pip install virtualenvwrapper
+echo 'export WORKON_HOME=$HOME/.virtualenvs' >> ~/.zprofile
+echo 'source /usr/local/bin/virtualenvwrapper.sh' >> ~/.zprofile
+source ~/.zprofile
+mkvirtualenv --no-site-packages apds
+pip install -U django south
