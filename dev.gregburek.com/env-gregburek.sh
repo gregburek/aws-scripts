@@ -23,6 +23,6 @@ tar xzf ~/zsh.tar.gz
 git clone git://github.com/robbyrussell/oh-my-zsh.git ~/.oh-my-zsh
 ln -s ~/.zsh/zshrc ~/.zshrc
 
-# Setup byobu to run at login and screen to use ^O as the command key
-echo '`echo $- | grep -qs i` && byobu-launcher && exit 1' > ~/.zprofile
+# Setup screen to run at login and screen to use ^O as the command key
+wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/dev.gregburek.com/zprofile -O ~/.zprofile
 echo 'escape ^Oo' > ~/.screenrc
