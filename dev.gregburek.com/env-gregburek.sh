@@ -28,6 +28,6 @@ wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/
 
 # Setup python tools
 sudo easy_install pip
-sudo pip install virtualenvwrapper
+sudo pip install -U virtualenvwrapper
 echo 'export WORKON_HOME=$HOME/.virtualenvs' >> ~/.zprofile
 echo 'source /usr/local/bin/virtualenvwrapper.sh' >> ~/.zprofile

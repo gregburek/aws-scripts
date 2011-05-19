@@ -33,7 +33,7 @@ sudo chmod -R 777 /opt/
 
 useradd -m -p saB/M7hY0p7Bw gregburek -s /usr/bin/zsh
 usermod -a -G adm,admin gregburek
-echo "gregburek  ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+echo "gregburek ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 su - gregburek -c "wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/dev.gregburek.com/env-gregburek.sh -O - | sh"
 
