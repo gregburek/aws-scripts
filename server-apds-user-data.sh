@@ -15,11 +15,11 @@ function die()
 	exit 1
 }
 
-apt-get update && apt-get upgrade -y -q
-apt-get -y -q install irb libopenssl-ruby libreadline-ruby rdoc ri ruby rake ruby-dev rubygems
-apt-get -y -q install exuberant-ctags git-core vim-nox zsh
-apt-get -y -q install build-essential psmisc python-dev libxml2 libxml2-dev python-setuptools libssl-dev
-apt-get -y -q build-dep nginx
+aptitude -yq update && aptitude -yq safe-upgrade
+aptitude -yq install irb libopenssl-ruby libreadline-ruby rdoc ri ruby rake ruby-dev rubygems
+aptitude -yq install exuberant-ctags git-core vim-nox zsh ack
+aptitude -yq install build-essential psmisc python-dev libxml2 libxml2-dev python-setuptools libssl-dev
+aptitude -yq build-dep nginx
 
 gem install github-markup redcarpet
 
