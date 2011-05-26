@@ -1,0 +1,65 @@
+# changing directory to code project
+function c { cd ~/code/$1; }
+
+# cd
+alias ..='cd ..'
+
+# ls
+alias ls="ls -F"
+alias l="ls -lAh"
+alias ll="ls -l"
+alias la='ls -Al'          # show hidden files
+alias lx='ls -lXB'         # sort by extension
+alias lk='ls -lSr'         # sort by size, biggest last
+alias lc='ls -ltcr'        # sort by and show change time, most recent last
+alias lu='ls -ltur'        # sort by and show access time, most recent last
+alias lt='ls -ltr'         # sort by date, most recent last
+alias lm='ls -al |more'    # pipe through 'more'
+alias lr='ls -lR'          # recursive ls
+alias tree='tree -Csu'     # nice alternative to 'recursive ls'
+
+# git
+alias g='git'
+alias gl='git pull'
+alias gp='git push'
+alias gd='git diff'
+alias gc='git commit'
+alias gca='git commit -a'
+alias gco='git checkout'
+alias gb='git branch'
+alias gs='git status'
+alias grm="git status | grep deleted | awk '{print \$3}' | xargs git rm"
+alias changelog='git log `git log -1 --format=%H -- CHANGELOG*`..; cat CHANGELOG*'
+
+# rails
+alias sc='script/console'
+alias ss='script/server'
+alias sg='script/generate'
+alias a='autotest -rails'
+alias tlog='tail -f log/development.log'
+alias scaffold='script/generate nifty_scaffold'
+alias migrate='rake db:migrate db:test:clone'
+alias rst='touch tmp/restart.txt'
+
+# commands starting with % for pasting from web
+alias %=' '
+
+# ps alias
+alias psrsync='ps auxww | grep -i 'rsync''
+alias psssh='ps auxww | grep -i 'ssh''
+
+# ssh aliases
+alias sshmini='ssh -p 58802 gregburek@mini.gregburek.com'
+alias sshtunnel='ssh -f -N -p 58802 gregburek@mini.gregburek.com -L 1202:localhost:5900 -L 1203:localhost:548 -L 1204:localhost:9091 -D 8080'
+alias v='mvim .'
+alias rm='rm -i'
+alias cp='cp -i'
+alias mv='mv -i'
+alias du='du -ksh'       # Makes a more readable output.
+alias df='df -h'
+alias path='echo -e ${PATH//:/\\n}'
+
+alias work='sudo cp /etc/hosts.work /etc/hosts'
+alias play='sudo cp /etc/hosts.play /etc/hosts'
+
+#alias vim='mvim -v'
