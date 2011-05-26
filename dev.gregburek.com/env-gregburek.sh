@@ -32,8 +32,15 @@ wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/
 wget --no-check-certificate -q -O - https://github.com/nvie/gitflow/raw/develop/contrib/gitflow-installer.sh | sudo sh
 sudo wget -O /usr/share/zsh/functions/Completion/Unix/_git http://zsh.git.sourceforge.net/git/gitweb.cgi?p=zsh/zsh;a=blob_plain;f=Completion/Unix/Command/_git;hb=HEAD
 
+# Setup gitconfig
+wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/dev.gregburek.com/git-config -O ~/.gitconfig
+
 # Setup python tools
 sudo easy_install pip
 sudo pip install -U virtualenvwrapper
 echo 'export WORKON_HOME=$HOME/.virtualenvs' >> ~/.zprofile
 echo 'source /usr/local/bin/virtualenvwrapper.sh' >> ~/.zprofile
+
+# Setup reminder 
+echo 'echo "Remember to run ssh-keygen -t rsa -C \"your_email@youremail.com\""' >> ~/.zprofile
+
