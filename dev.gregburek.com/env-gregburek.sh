@@ -19,7 +19,7 @@ curl https://github.com/posterous/vim/raw/master/vimrc.local > ~/.vimrc.local
 
 # Setup Oh My zsh! shell
 mkdir ~/.zsh
-wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/dev.gregburek.com/zsh/oh-my-zsh -O ~/.zsh/oh-my-zsh
+wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/dev.gregburek.com/zsh/oh-my-zshrc -O ~/.zsh/oh-my-zshrc
 wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/dev.gregburek.com/zsh/zshrc -O ~/.zsh/zshrc
 wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/dev.gregburek.com/zsh/aliases -O ~/.zsh/aliases
 git clone git://github.com/robbyrussell/oh-my-zsh.git ~/.oh-my-zsh
