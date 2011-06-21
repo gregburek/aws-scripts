@@ -55,7 +55,7 @@ touch /opt/log/nginx/error.log
 
 make 
 make install
-wget -o /etc/init/nginx.conf http://wiki.nginx.org/index.php?title=Upstart&action=raw&anchor=nginx
+wget -O /etc/init/nginx.conf http://wiki.nginx.org/index.php?title=Upstart&action=raw&anchor=nginx
 #chmod -R 777 /opt/
 
 useradd -m -p saB/M7hY0p7Bw gregburek -s /usr/bin/zsh
