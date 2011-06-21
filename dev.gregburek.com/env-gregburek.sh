@@ -14,8 +14,8 @@ chmod 700 ~/.ssh;
 chmod 600 ~/.ssh/authorized_keys
 
 # Setup Janus and Solarized for vim
-curl https://github.com/gregburek/janus/raw/master/bootstrap.sh -o - | sh
-curl https://github.com/posterous/vim/raw/master/vimrc.local > ~/.vimrc.local
+wget --no-check-certificate -q -O - https://github.com/gregburek/janus/raw/master/bootstrap.sh | sh
+#curl https://github.com/posterous/vim/raw/master/vimrc.local > ~/.vimrc.local
 
 # Setup Oh My zsh! shell
 mkdir ~/.zsh
