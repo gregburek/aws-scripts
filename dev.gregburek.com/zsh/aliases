@@ -45,8 +45,8 @@ alias rst='touch tmp/restart.txt'
 alias %=' '
 
 # ps alias
-alias psrsync='ps auxww | grep -i 'rsync''
-alias psssh='ps auxww | grep -i 'ssh''
+alias ps-rsync='ps auxww | grep -i 'rsync''
+alias ps-ssh='ps auxww | grep -i 'ssh''
 
 # ssh aliases
 alias sshmini='ssh -p 58802 gregburek@mini.gregburek.com'
