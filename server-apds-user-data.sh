@@ -16,7 +16,8 @@ function die()
 }
 
 aptitude -yq update && aptitude -yq safe-upgrade
-aptitude -yq install irb libopenssl-ruby libreadline-ruby rdoc ri ruby rake ruby-dev rubygems
+aptitude -yq install libopenssl-ruby libreadline-ruby ruby rake ruby-dev rubygems
+
 aptitude -yq install exuberant-ctags git-core vim-nox zsh ack
 aptitude -yq install build-essential psmisc python-dev libxml2 libxml2-dev python-setuptools libssl-dev
 aptitude -yq build-dep nginx
