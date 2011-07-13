@@ -1,5 +1,0 @@
-if [ ${SHLVL} -eq 1 ]; then
-    ((SHLVL+=1)); export SHLVL
-    exec screen -R -e "^Oo" ${SHELL} -l
-fi
-
