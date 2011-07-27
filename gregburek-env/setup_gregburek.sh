@@ -25,6 +25,9 @@ wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/
 git clone git://github.com/robbyrussell/oh-my-zsh.git ~/.oh-my-zsh
 ln -s ~/.zsh/zshrc ~/.zshrc
 
+# Setup tmux 
+wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/gregburek-env/tmux.conf -O ~/.tmux.conf
+
 # Setup git-flow
 wget --no-check-certificate -q -O - https://github.com/nvie/gitflow/raw/develop/contrib/gitflow-installer.sh | sudo sh
 sudo wget -O /usr/share/zsh/functions/Completion/Unix/_git http://zsh.git.sourceforge.net/git/gitweb.cgi?p=zsh/zsh;a=blob_plain;f=Completion/Unix/Command/_git;hb=HEAD
