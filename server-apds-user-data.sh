@@ -31,7 +31,7 @@ sudo useradd -m -p saB/M7hY0p7Bw gregburek -s /usr/bin/zsh
 sudo usermod -a -G adm,admin gregburek
 echo "gregburek ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-mkdir /opt/
+# mkdir /opt/
 chown gregburek:gregburek /opt
 
 su - gregburek -c "wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/gregburek-env/setup_gregburek.sh -O - | sh"
