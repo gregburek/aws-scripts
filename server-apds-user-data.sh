@@ -17,18 +17,18 @@ function die()
 	exit 1
 }
 
-aptitude -yq update && aptitude -yq safe-upgrade
-aptitude -yq install libopenssl-ruby libreadline-ruby ruby rake ruby-dev rubygems
+sudo aptitude -yq update && aptitude -yq safe-upgrade
+sudo aptitude -yq install libopenssl-ruby libreadline-ruby ruby rake ruby-dev rubygems
 
-aptitude -yq install exuberant-ctags git-core vim-nox zsh ack
-aptitude -yq install build-essential psmisc python-dev libxml2 libxml2-dev python-setuptools libssl-dev
-aptitude -yq build-dep nginx
+sudo aptitude -yq install exuberant-ctags git-core vim-nox zsh ack
+sudo aptitude -yq install build-essential psmisc python-dev libxml2 libxml2-dev python-setuptools libssl-dev
+sudo aptitude -yq build-dep nginx
 
-gem install github-markup redcarpet
+sudo gem install github-markup redcarpet
 
 
-useradd -m -p saB/M7hY0p7Bw gregburek -s /usr/bin/zsh
-usermod -a -G adm,admin gregburek
+sudo useradd -m -p saB/M7hY0p7Bw gregburek -s /usr/bin/zsh
+sudo usermod -a -G adm,admin gregburek
 echo "gregburek ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 mkdir /opt/
