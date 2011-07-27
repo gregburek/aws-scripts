@@ -27,7 +27,7 @@ ln -s ~/.zsh/zshrc ~/.zshrc
 
 # Setup tmux 
 wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/gregburek-env/tmux.conf -O ~/.tmux.conf
-wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/gregburek-env/local.rc -O ~/.local.rc
+wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/gregburek-env/local.rc -O ~/.localrc
 
 # Setup git-flow
 wget --no-check-certificate -q -O - https://github.com/nvie/gitflow/raw/develop/contrib/gitflow-installer.sh | sudo sh
