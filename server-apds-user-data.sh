@@ -5,6 +5,8 @@
 #Purpose : Setup dev.apds.co env for my use
 #Comments :
 
+exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+
 set -e -x
 export DEBIAN_FRONTEND=noninteractive
 
