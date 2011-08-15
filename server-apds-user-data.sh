@@ -17,6 +17,10 @@ function die()
 	exit 1
 }
 
+sudo apt-add-repository ppa:awstools-dev/awstools
+sudo apt-get update
+sudo apt-get install ec2-api-tools
+
 sudo aptitude -yq update && aptitude -yq safe-upgrade
 sudo aptitude -yq install libopenssl-ruby libreadline-ruby ruby rake ruby-dev rubygems
 
