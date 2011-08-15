@@ -1,1 +1,3 @@
 This is a collection of startup, user-data and benchmarking scripts that are of use to me. 
+
+The Start-up scripts can be run as root or used as User-Data when launching EC2 instances. They have been working well with the instances from http://alestic.com/
