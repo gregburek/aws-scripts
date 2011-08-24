@@ -1,0 +1,2065 @@
+#!/usr/bin/perl
+###############################################################################
+# awsapi - Low-level Bourne shell access to Amazon EC2 etc.                   #
+###############################################################################
+# POD documentation is found at the bottom; Try "awsapi --man" to see it.     #
+###############################################################################
+#                                                                             #
+# Copyright (c) 2011 Henrik Gulbrandsen <henrik@gulbra.net>                   #
+#                                                                             #
+# This software is provided 'as-is', without any express or implied warranty. #
+# In no event will the authors be held liable for any damages arising from    #
+# the use of this software.                                                   #
+#                                                                             #
+# Permission is granted to anyone to use this software for any purpose,       #
+# including commercial applications, and to alter it and redistribute it      #
+# freely, subject to the following restrictions:                              #
+#                                                                             #
+# 1. The origin of this software must not be misrepresented; you must not     #
+#    claim that you wrote the original software. If you use this software     #
+#    in a product, an acknowledgment in the product documentation would be    #
+#    appreciated but is not required.                                         #
+#                                                                             #
+# 2. Altered source versions must be plainly marked as such, and must not be  #
+#    misrepresented as being the original software.                           #
+#                                                                             #
+# 3. This notice may not be removed or altered from any source distribution,  #
+#    except that more "Copyright (c)" lines may be added to already existing  #
+#    "Copyright (c)" lines if you have modified the software and wish to make #
+#    your changes available under the same license as the original software.  #
+#                                                                             #
+###############################################################################
+
+use strict;
+
+use File::Path qw(rmtree);
+use File::Temp qw(tempfile tempdir);
+use Getopt::Long;
+use Pod::Usage;
+use POSIX qw(strftime);
+
+### User Parameters ###########################################################
+
+my $apiVersion = $ENV{'EC2_API_VERSION'} || '2010-11-15';
+my $secretAccessKey = '';
+my $accessKeyId = '';
+my $debugging = 0;
+
+### HMAC Support ##############################################################
+
+sub XOR {
+    my @a = split(//, pack("a[64]", $_[0]));
+    my @b = split(//, pack("a[64]", $_[1]));
+    return join("", map { $_ ^= shift(@a); } @b);
+}
+
+sub SHA1 {
+    my ($file, $fileName) = tempfile(); print $file @_; close(FILE);
+    return pack("H[40]", `cat $fileName | openssl dgst -sha1; rm $fileName`);
+}
+
+sub HMAC {
+    my ($key, $text) = @_; my $ipad = "6" x 64; my $opad = "\\" x 64;
+    return SHA1(XOR($key, $opad) . SHA1(XOR($key, $ipad) . $text));
+}
+
+### Text Encoding #############################################################
+
+sub base64
+{
+    my ($data) = @_;
+
+    # Convert data to a bit string
+    my $bits = unpack("B*", $data);
+    my $output = "";
+
+    # The Base 64 alphabet
+    my $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef'.
+                   'ghijklmnopqrstuvwxyz0123456789+/';
+
+    # Convert six bits at a time
+    while ($bits =~ m[(.{1,6})]g) {
+        my $byte = ord(pack("B*", "00$1" . '0' x (6 - length($1))));
+        $output .= substr($alphabet, $byte, 1);
+    }
+
+    # Add padding to get a multiple of 24 bits
+    return $output . '=' x (-length($output) % 4);
+}
+
+sub urlEncode
+{
+    my ($text) = @_;
+
+    $text =~ s[([^A-Za-z0-9-_.~])][sprintf("%%%02X", ord($1))]ge;
+
+    return $text;
+}
+
+### XML Support ###############################################################
+
+sub rewritePath
+{
+    my ($path) = @_;
+
+    # These paths of Amazon S3 should be handled as lists
+    $path =~ s[(\.listAllMyBucketsResponse\.buckets)\.bucket$][$1\.item];
+    $path =~ s[(\.listBucketResponse\.contents)$][$1\.item];
+    $path =~ s[(\.getBucketAccessControlPolicyResponse
+               \.accessControlList\.grant)$][$1\.item]x;
+    $path =~ s[(\.getObjectResponse\.metadata)$][$1\.item];
+
+    # This restores the path depth at end tags
+    $path =~ s[(\.listBucketResponse\.contents)\.\d+$][$1];
+    $path =~ s[(\.accessControlPolicy\.accessControlList\.grant)\.\d+$][$1];
+    $path =~ s[(\.getBucketAccessControlPolicyResponse
+               \.accessControlList\.grant)\.\d+$][$1]x;
+    $path =~ s[(\.getObjectResponse\.metadata)\.\d+$][$1];
+
+    return $path;
+}
+
+sub stripPathPrefix
+{
+    my ($hash, $minPrefix, $pattern) = @_;
+    my $shortestPrefix = undef;
+    my @oldKeys;
+
+    # For keys starting with $minPrefix and matching $pattern:
+    for my $key (%$hash) {
+        if ($key =~ m[^$minPrefix] && $key =~ m[($pattern)]) {
+
+            # Find the shortest prefix matching all such keys
+            if (!defined($shortestPrefix) || length($1) < $shortestPrefix) {
+                $shortestPrefix = $1;
+            }
+        }
+    }
+
+    # Do nothing if there is no prefix
+    if (!defined($shortestPrefix)) {
+        return $hash;
+    }
+
+    # Remove the prefix from those keys
+    for my $key (%$hash) {
+        if ($key =~ m[^$shortestPrefix(.*)]) {
+            $hash->{$1} = $hash->{$key};
+            push(@oldKeys, $key);
+        }
+    }
+
+    # Delete the old entries
+    for my $key (@oldKeys) {
+        delete $hash->{$key};
+    }
+
+    return $hash;
+}
+
+sub parseXml
+{
+    my ($xml) = @_;
+
+    my ($path, $pathHash, $value, $end, $result);
+
+    while ($xml ne "") {
+
+        # Start tags
+        if ($xml =~ s[^
+            <([^\s/>]+) # <Name
+            ( \s+       # whitespace
+              \S+       # argName
+              \s*=\s*   # =
+              "[^"]*"   # argValue
+            )*
+            \s*(/)?>    # > (or />)
+            ][]xs)
+        {
+            # Ignore any namespace prefix
+            my $name = $1; $name =~ s[.*:][];
+
+            # Lowercase initial letters
+            $name =~ s[^([A-Z]+)][\L$1];
+
+            # Add a new element to the path
+            $path = "$path.$name"; $value = ""; $end = ($3)? 1 : 0;
+
+            # Rewrite some paths for Amazon S3
+            $path = rewritePath($path);
+
+            # Replace item and Error elements by numbers
+            if ($path =~ s[\.(item|error)$][\.1]) {
+                while (exists($pathHash->{$path})) {
+                    $path =~ s[\.(\d+)$]['.'.($1+1)]e;
+                }
+                $pathHash->{$path} = 1;
+            }
+        }
+
+        # Character data
+        elsif ($xml =~ s[^([^<>]+?)<][<]s) {
+            $value = $1; $value =~ s[^\s+][]; $value =~ s[\s+$][];
+        }
+
+        # End tags
+        elsif ($xml =~ s[^</(\S+?)\s*>][]s) {
+            $end = 1;
+        }
+
+        # Processing instructions
+        elsif ($xml =~ s[^<[^>]*>][]) {
+            next;
+        }
+
+        # Random garbage
+        elsif ($xml =~ s[^[^<]+][]s) {
+            next;
+        }
+
+        # Save at each end tag
+        if ($end) {
+
+            # Save non-empty values, but skip the outermost element
+            if ($value ne "") {
+                my $path = $path;
+                $path =~ s[^\.[^.]*\.][];
+                print STDERR "$path = \"$value\"\n" if ($debugging);
+                $result->{$path} = $value;
+            }
+
+            # Rewrite some paths for Amazon S3
+            $path = rewritePath($path);
+
+            # Pop the last path component and go on
+            $path =~ s[(.*)\..*][$1];
+            $value = undef; $end = 0;
+        }
+    }
+
+    return stripPathPrefix($result, "body[.]", ".*Response[.]");
+}
+
+### Generic Object ############################################################
+
+package Object;
+
+sub new
+{
+    my ($class, %args) = @_;
+    my $self = {};
+    bless $self, $class;
+    return $self;
+}
+
+sub AUTOLOAD
+{
+    my $method = $Object::AUTOLOAD;
+    my $self = shift;
+
+    # setValue(...): Set "value" to the list of arguments
+    if ($method =~ m[set(\w+)$]) {
+
+        # Set the value
+        my $name = "\l$1";
+        $self->{$name} = [@_];
+
+        # For lists, recalculate any corresponding hashes
+        if ($name =~ m[(.*)List$] && defined($self->{"$1Hash"})) {
+            $self->{"$1Hash"} = {};
+            for my $value (@_) {
+                $self->{"$1Hash"}->{(ref($value) eq 'main::Object')?
+                    $value->getName() : $value} = $value;
+            }
+        }
+        return;
+    }
+
+    # getValue(): Get a previously set "value"
+    if ($method =~ m[(get|is)(\w+)$]) {
+        my $value = $self->{"\l$2"} || return ();
+        return (wantarray)? @$value : $$value[0];
+    }
+
+    # grabObject($name): Return the object (possibly new) for a given name
+    if ($method =~ m[grab(\w+)$]) {
+        my ($name) = @_;
+
+        # Look for an existing object
+        my $hash = $self->{"\l$1Hash"};
+        my $list = $self->{"\l$1List"};
+        my $object = $hash->{$name};
+
+        # Create one if it didn't exist
+        if (!defined($object)) {
+            $object = new Object();
+            $object->{name} = [ $name ];
+            $hash->{$object} = $object;
+            $hash->{$name} = $object;
+            push(@$list, $object);
+        }
+
+        # Store these in case they didn't exist before
+        $self->{"\l$1Hash"} = $hash;
+        $self->{"\l$1List"} = $list;
+
+        return $object;
+    }
+
+    # addValue(...)/addValues(...): Add arguments to "values"
+    if ($method =~ m[add(Unique)?(\w+?)s?$]) {
+
+        # Find the hash and list variables
+        my $hash = $self->{"\l$2Hash"};
+        my $list = $self->{"\l$2s"};
+        my $unique = ($1)? 1 : 0;
+
+        # Add each value if it's not unique and already added
+        for my $arg (@_) {
+            next if ($unique and defined($hash->{$arg}));
+            $hash->{$arg} = $arg;
+            push(@$list, $arg);
+        }
+
+        # Store these in case they didn't exist before
+        $self->{"\l$2Hash"} = $hash;
+        $self->{"\l$2s"} = $list;
+    }
+
+    # hasValue(...): Look for a given value or any value
+    if ($method =~ m[has(\w+?)$]) {
+
+        # Case 1: An explicitly set value
+        return 1 if defined($self->{"\l$1"});
+
+        # Case 2: Added or created values
+        return 0 if @_ && !defined($self->{"\l$1Hash"}->{$_[0]});
+
+        # All args exist; no args exist if there are no args
+        return (@_)? 1 : 0;
+    }
+}
+
+package main;
+
+### Utility Functions #########################################################
+
+sub byName
+{
+    return $a->getName() cmp $b->getName()
+}
+
+sub stop
+{
+    my ($format, @args) = @_;
+
+    if ($format) {
+        my $message = sprintf($format, @args);
+        print STDERR "awsapi: $message\n";
+    }
+
+    print "eval false\n";
+    exit(1);
+}
+
+sub handleOptions
+{
+    my ($help, $man);
+
+    my $options = new Object();
+
+    while ($ARGV[0] =~ m[^-]) {
+        my $option = shift(@ARGV);
+        if ($option eq '--debug') { $debugging = 1; }
+        elsif ($option eq '--help') { $help = 1; }
+        elsif ($option eq '--man') { $man = 1; }
+        elsif ($option eq '--table') { $options->setTable(1); }
+        elsif ($option eq '--version') {
+            print "2011-04-18\n"; exit(0);
+        }
+        else {
+            stop("$option is a bad option");
+        }
+    }
+
+    pod2usage(-exitstatus => 0, -verbose => 2) if $man;
+    pod2usage(-exitstatus => 0) if $help;
+    return $options;
+}
+
+sub readSettings
+{
+    # Read secrets from ~/.awsapirc if it exists
+    if (open(SETTINGS, "$ENV{'HOME'}/.awsapirc")) {
+        while (<SETTINGS>) {
+            if (/^secretAccessKey:\s*(\S+)/) { $secretAccessKey = $1; }
+            if (/^accessKeyId:\s*(\S+)/) { $accessKeyId = $1; }
+        }
+        close(SETTINGS);
+    }
+
+    # Each of these must exist
+    my @neededSettings = (
+        'secretAccessKey',
+        'accessKeyId',
+    );
+
+    # Check if some of the required settings are missing
+    my @missingSettings =
+        map { eval("\$$_ eq ''")? ($_) : () } @neededSettings;
+    my $plural = ($#missingSettings != 0);
+    my $message = "";
+
+    # If so, try to say that in grammatically correct English
+    if ($#missingSettings >= 2) {
+        my $finalName = pop(@missingSettings);
+        $message = join(', and ', join(',', @missingSettings), $finalName);
+        $message = sprintf("%s are unset.", $message);
+    } elsif ($#missingSettings >= 1) {
+        $message = sprintf("%s and %s are unset.", @missingSettings);
+    } elsif ($#missingSettings >= 0) {
+        $message = sprintf("%s is unset.", @missingSettings);
+    }
+
+    # Print a user-friendly error message
+    if ($message ne "") {
+        print STDERR "ERROR: $message\n";
+        print STDERR sprintf("Add %s in the $ENV{HOME}/.awsapirc file.\n",
+            ($plural)? 'them' : 'it'); exit(1);
+    }
+}
+
+sub splitArgs
+{
+    my @newArgs;
+
+    # Split args consisting of many tokens
+    for my $arg (@ARGV) {
+        while ($arg =~ s[(.*?)(:=)|(.+)][]) {
+            push(@newArgs, $1) if ($1 ne "");
+            push(@newArgs, $2) if ($2 ne "");
+            push(@newArgs, $3) if ($3 ne "");
+        }
+    }
+
+    @ARGV = @newArgs;
+}
+
+sub combineArgs
+{
+    my $savedArg;
+    my @newArgs;
+
+    for my $arg (@ARGV) {
+
+        # Add some tokens to the previous arg
+        if ($arg =~ m[^[,.:]$] && $savedArg eq "") {
+            $savedArg = pop(@newArgs);
+        }
+
+        # Join args when the first arg is obviously incomplete
+        $savedArg .= $arg;
+        if ($savedArg !~ m[[.:+]$]) {
+            push(@newArgs, $savedArg);
+            $savedArg = "";
+        }
+    }
+
+    @ARGV = @newArgs;
+}
+
+sub expandBraces
+{
+    my @args = @ARGV;
+
+    # Escape some characters
+    for my $arg (@args) {
+        $arg =~ s[([% ]|\\[{,}])][sprintf("%%%02X", ord(substr($1,-1)))]ge;
+    }
+
+    # Join the arguments into a string
+    my $args = join(' ', @args);
+
+    # While a "{...} pattern remains:
+    while ($args =~ m[^(.*?\s*)(\S*){\s*([^{}]*?)\s*}(\S*)(.*)$]s) {
+        my ($start, $prefix, $contents, $suffix, $end) = ($1, $2, $3, $4, $5);
+        $args = $start; @args = ();
+
+        # Expand it according to the rules
+        for my $text (split(/\s*,\s*/, $contents)) {
+            push(@args, "${prefix}${text}${suffix}")
+        }
+
+        # Keep the comma for nested brace expansions
+        $args .= join(', ', @args) . $end;
+    }
+
+    # Split the string into separate args again
+    @args = split(/ /, $args);
+
+    # Unescape the escaped characters
+    for my $arg (@args) {
+        $arg =~ s[,$][]; $arg =~ s[%([0-9A-F]{2})][chr(hex($1))]ge;
+    }
+
+    # Put rename operations first, for clarity
+    for my $arg (@args) {
+        if ($arg =~ s[([^.]+:)][]) {
+            my $name = $1; $arg =~ s[^(.*[+])?][$1$name];
+        }
+    }
+
+    if ($debugging) {
+
+        # Optionally display the result to catch expansion bugs
+        print STDERR "Expanded command line:\n    awsapi $args[0]";
+        my $template = '^(lt|le|eq|ge|gt|ne|in|or|:=)$';
+        my $glueCount = 0;
+
+        # Print filter op + value on the same line as the arg
+        for my $arg (@args[1..$#args]) {
+            if ($arg =~ m[$template]) { $glueCount = 2; }
+            if ($glueCount == 0) { print STDERR "\n   "; }
+            else { $glueCount--; }
+            print STDERR " $arg"; 
+        }
+
+        # End here
+        print STDERR "\n";
+    }
+
+    @ARGV = @args;
+}
+
+sub findVersion
+{
+    my ($prefix) = @_;
+
+    my $name = "\U$prefix\E_API_VERSION";
+
+    my $version = $ENV{$name};
+    if (!defined($version)) {
+        stop("the $name environment variable is not set");
+    }
+
+    return $version;
+}
+
+sub findEndpoint
+{
+    my ($prefix) = @_;
+
+    my $url = "https://$prefix.amazonaws.com/";
+
+    my $name = "\U$prefix\E_ENDPOINT";
+    if (defined($ENV{$name})) {
+        $url = $ENV{$name};
+    }
+
+    return $url;
+}
+
+sub parseAction
+{
+    my ($argv) = @_;
+
+    if ($#$argv < 0) {
+        print STDERR "Usage: awsapi [options] <action> [parameters]\n";
+        print STDERR "       Try --help or --man for more details.\n";
+        exit 1;
+    }
+
+    my $action = shift(@$argv);
+    my $prefix = "";
+
+    # Verify the action
+    if ($action =~ m[(.*?)\.(.*)]) {
+        ($prefix, $action) = ($1, $2);
+    } else {
+        stop("missing action prefix");
+    }
+
+    my $version = findVersion($prefix);
+    my $url = findEndpoint($prefix);
+
+    return ($prefix, $url, $version, $action);
+}
+
+sub skipInputSpecs
+{
+    my ($parseState, $arg) = @_;
+
+    # Skip all input specs
+    if ($arg !~ m[\w=]) {
+        $parseState->setParsingInput(0);
+        return 0;
+    }
+
+    # Complain if an input spec arrives out of order
+    if (!$parseState->isParsingInput()) {
+        stop("late input spec ($arg)");
+    }
+
+    return 1;
+}
+
+sub expandFilterValues
+{
+    my ($filterValues) = @_;
+
+    # If the filter value is a list:
+    if ($filterValues =~ m[^@(\w+)$]) {
+        my $value = $ENV{$1};
+        my $name = $1;
+
+        # Look for the environment variable
+        if (!exists($ENV{$1})) {
+            stop("no $name variable; did you export it?");
+        }
+
+        # Expand into individual values
+        my @values = $value =~
+            m[\s*( # Optional space
+            "(?:\\.|[^"])*"   # Double-quoted string
+            |(?:\\.|[^"\s])+  # Anything except unescaped quotes and spaces
+            )]xsg;
+
+        # Remove quotes and escapes
+        for my $value (@values) {
+            $value =~ s[^"(.*)"$][$1]s;
+            $value =~ s[\\(.)][$1]gs;
+            $value =~ s[/][\\/]gs;
+        }
+
+        # Join the values with slashes
+        $filterValues = join('/', @values);
+    }
+
+    return $filterValues;
+}
+
+sub parseFilterValues
+{
+    my ($outputSpec, $filterType, $arg) = @_;
+
+    # Allow a comma  after the values
+    if ($arg !~ s[([^,]+),?][]) {
+        stop("missing value");
+    }
+
+    my $filterValues = expandFilterValues($1);
+
+    # Handle required values separately
+    if ($filterType eq ':=') {
+        for my $value (split(/(?<!\\)\//, $filterValues)) {
+            $outputSpec->addValidValue($value);
+            $outputSpec->setFinalValue($value);
+        }
+    }
+
+    # Default values are also special
+    elsif ($filterType eq 'or') {
+        $outputSpec->setDefaultValue($filterValues);
+    }
+
+    # Anything else is an ordinary filter
+    else {
+        # Construct a new filter object...
+        my $filter = new Object();
+
+        # ...set its type and values...
+        $filter->setType($filterType);
+        for my $value (split(/(?<!\\)\//, $filterValues)) {
+            $filter->addValue($value);
+        }
+
+        # ...and add it to the output spec
+        $outputSpec->setFilter($filter);
+    }
+}
+
+sub parseFilters
+{
+    my ($parseState, $arg) = @_;
+
+    my $outputSpec = $parseState->getOutputSpec();
+    my $filterType = $parseState->getFilterType();
+
+    # This may be the start of a new filter spec
+    if ($outputSpec && !$filterType
+    &&  $arg =~ m[^(lt|le|eq|ge|gt|ne|in|or|:=)$]) {
+        if ($arg eq 'in') { $arg = 'eq'; }
+        $parseState->setFilterType($arg);
+        return 1;
+    }
+
+    # For filter values, complete the filter
+    if (defined($filterType)) {
+        parseFilterValues($outputSpec, $filterType, $arg);
+        $parseState->setFilterType(undef);
+        $parseState->setOutputSpec(undef);
+        return 1;
+    }
+
+    return 0;
+}
+
+sub parseSimpleSpec
+{
+    my ($arg) = @_;
+
+    my $NAME = '(?:[A-Za-z_]\w*?|\d+)';
+    my $PATH = "$NAME(?:[.]$NAME)*";
+    my $JOIN = "\.?~$NAME\.$NAME\@$NAME";
+
+    if ($arg !~ m[^(($NAME)(@($NAME))?[+])?(($PATH):)?($PATH($JOIN)?),?$]) {
+        $arg =~ s[,$][]; stop("syntax error in path spec ($arg)");
+    }
+
+    my $outputSpec = new Object();
+    my ($objectSpec, $objectName, $indexSpec,
+        $indexName, $fieldName, $resultName) =
+            ($1, $2, $3, $4, $6, $7);
+
+    # Move any prefix from $fieldName to $resultName
+    if ($fieldName =~ s[(.*\.)][]) {
+        $resultName = "$1$resultName";
+    }
+
+    # Ignore any earlier renaming
+    $resultName =~ s[[^.]*:][]g;
+
+    # Make an implicit field name explicit
+    if ($fieldName eq "") {
+        $fieldName = $resultName;
+        $fieldName =~ s[.*\.][];
+    }
+
+    # Either <name> or "<object>.<field>"
+    my $outputName = ($objectName)? "$objectName.$fieldName" : $fieldName;
+
+    # Use a separate $objectName for each ($objectName,$indexName) pair
+    if ($indexName) {
+        $objectName = "$objectName\@$indexName\@";
+    }
+
+    # Set requirements for printed output
+    $outputSpec->setOutputName($outputName);
+    $outputSpec->setObjectName($objectName);
+    $outputSpec->setObjectSpec(1) if ($objectSpec);
+    $outputSpec->setIndexName($indexName);
+    $outputSpec->setFieldName($fieldName);
+
+    # Set requirements for received values
+    $outputSpec->setResultName($resultName);
+
+    return $outputSpec;
+}
+
+sub parseOutputSpecs
+{
+    my (@argv) = @_;
+
+    my $parseState = new Object();
+    my @outputSpecs;
+
+    # The input args should come first
+    $parseState->setParsingInput(1);
+
+    for my $arg (@argv) {
+
+        # Handle the easy stuff
+        next if skipInputSpecs($parseState, $arg);
+        next if parseFilters($parseState, $arg);
+
+        # Anything remaining should be a path spec
+        my $outputSpec = parseSimpleSpec($arg);
+        push(@outputSpecs, $outputSpec);
+        if ($arg =~ m[,$]) {
+            $outputSpec = undef;
+        }
+
+        # Remember this for a while
+        $parseState->setOutputSpec($outputSpec);
+    }
+
+    return @outputSpecs;
+}
+
+sub parseQueryArgs
+{
+    my $queryArgs;
+
+    # Collect all input arguments
+    for my $arg (@ARGV) {
+        if ($arg =~ m[^([^:=]*)=(.*)$]) {
+            my ($name, $value) = ($1, $2);
+            $queryArgs->{$name} = $value;
+        }
+    }
+
+    return $queryArgs;
+}
+
+sub handleErrors
+{
+    my ($response) = @_;
+
+    # Check if we got an error response
+    my $errorIndex = 1;
+    while (exists($response->{"errors.$errorIndex.code"})) {
+        my $message = $response->{"errors.$errorIndex.message"};
+        printf STDERR "awsapi: %s\n", $response->{"errors.$errorIndex.code"};
+        printf STDERR "$message\n" if defined($message);
+        $errorIndex++;
+    }
+
+    # Handle a single S3 fault response
+    if (exists($response->{"body.fault.faultcode"})) {
+        my $message = $response->{"body.fault.faultstring"};
+        my $code = $response->{"body.fault.faultcode"};
+        $code =~ s[^soapenv:][]; printf STDERR "awsapi: %s\n", $code;
+        printf STDERR "$message\n" if defined($message);
+        $errorIndex++;
+    }
+
+    # Stop if an error was reported
+    if ($errorIndex > 1) {
+        stop();
+    }
+}
+
+sub findMatchingResults
+{
+    my ($template, $response) = @_;
+
+    my @indexArray = ();
+    my $indexCount = 0;
+    my $indexIndex = 0;
+    my @results = ();
+
+    # Count the number of ".n." wildcards
+    my @index = ($template =~ m[\.n\.]g);
+    my $indexCount = scalar @index;
+
+    # Construct a template to search for matches
+    $template =~ s[(\W)][\\$1]g;
+    $template =~ s[\\\.n\\\.][\.\(\\d+\)\.]g;
+
+    # For each name in the response list:
+    for my $name (sort keys(%$response)) {
+
+        # See if it matches
+        if (@index = ($name =~ m[^$template$])) {
+
+            # Store a result object
+            my $result = new Object();
+            $result->setName($name);
+            $result->setIndex(@index);
+            $result->setValue($response->{$name});
+            push(@results, $result);
+        }
+    }
+
+    # Add a null result for missing exact matches
+    if ($indexCount == 0 && !@results) {
+        push(@results, undef);
+    }
+
+    return @results;
+}
+
+sub buildValueHash
+{
+    my ($output) = @_;
+
+    my $dirName = grabDirName($output);
+    my $valueHash = {};
+    local $/ = undef;
+
+    opendir(my $dir, $dirName) || stop("attempt to join missing value");
+
+    # for each "table[index].column" file
+    for my $fileName (readdir($dir)) {
+        if ($fileName =~ m{^(.*?)\[(.*?)\]\.(.*?)$}) {
+
+            # Slurp all data...
+            open(my $dataFile, "<$dirName/$fileName");
+            my $value = <$dataFile>; close($dataFile);
+
+            # ...normalize the value...
+            $value =~ s[^echo '(.*)'\n$][$1];
+
+            # ...and save it in the hash
+            $valueHash->{$fileName} = $value;
+        }
+    }
+
+    closedir(dir);
+
+    return $valueHash;
+}
+
+sub findJoinedResults
+{
+    my ($output, $outputSpec, $response) = @_;
+
+    my $template = $outputSpec->getResultName();
+    my $NAME = '[A-Za-z_]\w*?';
+
+    # Check if the output spec has a joined field
+    if ($template !~ m[(.*?)\.?~($NAME)\.($NAME)\@($NAME),?$]) {
+        return findMatchingResults($template, $response);
+    }
+
+    # If so, grab the info and remove it from the output spec
+    my ($path, $table, $column, $indexName) = ($1, $2, $3, $4);
+    $outputSpec->setResultName("$path.$indexName");
+    $outputSpec->setFieldName($column);
+
+    # Grab results for "$indexName" to get the right index values
+    my @results = findMatchingResults("$path.$indexName", $response);
+    my $valueHash = buildValueHash($output);
+
+    # Map results to use "$column" instead
+    for my $result (@results) {
+
+        # Change the name
+        my $name = $result->getName();
+        $name =~ s[$indexName$][$column];
+        $result->setName($name);
+
+        # Change the value
+        my $index = $result->getValue();
+        my $value = $valueHash->{"${table}Table[${index}]\.${column}"};
+        if (!defined($value)) { $value = '-'; }
+        $result->setValue($value);
+    }
+
+    return @results;
+}
+
+sub addDeletion
+{
+    my ($output, $groupName, $objectName) = @_;
+
+    my $deletion = new Object();
+    $deletion->setGroupName($groupName);
+    $deletion->setObjectName($objectName);
+    $output->addDeletion($deletion);
+}
+
+sub filterResults
+{
+    my ($output, $outputSpec, @results) = @_;
+
+    # Do nothing if there is no filter
+    my $filter = $outputSpec->getFilter();
+    if (!defined($filter)) {
+        return @results;
+    }
+
+    # Grab the filter values and its type
+    my @filterValues = $filter->getValues();
+    my $filterType = $filter->getType();
+    my @newResults;
+
+    # This template checks for two numbers
+    my $template = '[+-]?(\d+(\.\d*)?|\.\d+)';
+    $template = "^$template:$template\$";
+
+    # Map string operators to numeric operators
+    my %opHash = (
+        eq => '==', lt => '<', le => '<=',
+        ne => '!=', gt => '>', ge => '>=',
+    );
+
+    # For each result:
+    result: for my $result (@results) {
+
+        # Refuse to filter undefined results
+        if (!defined($result)) {
+            return @results;
+        }
+
+        my $resultValue = $result->getValue();
+
+        # Compare with each allowed value
+        for my $filterValue (@filterValues) {
+
+            # Use numeric comparison if both values look like numbers
+            my $filterOp = ("$resultValue:$filterValue" =~ m[$template])?
+                $opHash{$filterType} : $filterType;
+
+            # Add the result if it matches at least one value
+            if (eval "'$resultValue' $filterOp '$filterValue'") {
+                push(@newResults, $result);
+                next result;
+            }
+        }
+
+        # If there is a potential object to delete:
+        if ($outputSpec->hasObjectSpec()) {
+
+            # Get the basic information...
+            my $objectPrefix = $outputSpec->getObjectName();
+            my @index = $result->getIndex();
+            my $objectName = "${objectPrefix}[" . join('.', @index) . "]";
+
+            # ....and mark the object for deletion
+            addDeletion($output, "${objectPrefix}List", $objectName);
+        }
+    }
+
+    return @newResults;
+}
+
+sub addDefaults
+{
+    my ($outputSpec, @results) = @_;
+    my @newResults;
+
+    # @results may be (undef) when an expected result is missing
+    for my $result (@results) {
+        my $value = undef;
+
+        # Attempt to get the value
+        if (defined($result)) {
+            $value = $result->getValue();
+        }
+
+        # If there is a default value:
+        if ($outputSpec->hasDefaultValue()) {
+
+            # Make sure that we have a result
+            if (!defined($result)) {
+                $result = new Object();
+                $result->setName($outputSpec->getResultsName());
+            }
+
+            # Make sure that we have a value
+            if ($value eq "") {
+                $result->setValue($outputSpec->getDefaultValue());
+            }
+        }
+
+        push(@newResults, $result);
+    }
+
+    return @newResults;
+}
+
+sub verifyResults
+{
+    my ($outputSpec, @results) = @_;
+
+    my $finalValue = $outputSpec->getFinalValue();
+
+    for my $result (@results) {
+
+        # Complain if an expected result is missing
+        if (!defined($result) && !$outputSpec->hasValidValue('-')) {
+            my $resultName = $outputSpec->getResultName();
+            stop("no $resultName returned");
+        }
+
+        # The '-' represents an expected missing value
+        my $value = (defined($result))? $result->getValue() : '-';
+
+        # Complain if an unexpected value appears
+        if (defined($finalValue) && !$outputSpec->hasValidValue($value)) {
+            my $outputName = $outputSpec->getOutputName();
+            stop("bad $outputName=$value");
+        }
+
+        # Recommend waiting if we don't have the final value
+        if (defined($finalValue) && $value ne $finalValue) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+sub prepareOutput
+{
+    my ($output, $outputSpec, @results) = @_;
+
+    # For simple variables: simply add values to the list
+    if (!$outputSpec->hasObjectSpec()) {
+        my $outputName = $outputSpec->getOutputName();
+        my $variable = $output->grabVariable($outputName);
+        my @values = map { $_->getValue(); } @results;
+        $variable->addValues(@values);
+        return;
+    }
+
+    # Field specs create a list of indexed "objects"
+    my $objectPrefix = $outputSpec->getObjectName();
+    my $groupName = "${objectPrefix}List";
+    my $group = $output->grabGroup($groupName);
+
+    # We will add a specific field to each "object"
+    my $fieldName = $outputSpec->getFieldName();
+    $group->addHeader($fieldName);
+
+    # Each indexed result gives the field value for one "object"
+    for my $result (@results) {
+
+        # Grab the object
+        my @index = $result->getIndex();
+        my $objectName = "${objectPrefix}[" . join('.', @index) . "]";
+        my $object = $group->grabObject($objectName);
+
+        # Add the field value
+        my $field = $object->grabField($fieldName);
+        $field->addValue($result->getValue());
+    }
+}
+
+sub completeOutput
+{
+    my ($output, $outputSpec, @results) = @_;
+
+    # Only object specs need any completion
+    return if (!$outputSpec->hasObjectSpec());
+
+    # We're working on a specific field in a given group of objects
+    my $objectPrefix = $outputSpec->getObjectName();
+    my $group = $output->grabGroup("${objectPrefix}List");
+    my $fieldName = $outputSpec->getFieldName();
+
+    # Loop over all objects generated in this group
+    for my $object ($group->getObjectList()) {
+        my $field = $object->grabField($fieldName);
+
+        # Delete objects with filter requirements on missing values
+        if ($outputSpec->hasFilter() && !$field->getValues()) {
+            addDeletion($output, $group->getName(), $object->getName());
+            next;
+        }
+
+        # Add "-" if the field is missing in some objects
+        if (!$field->getValues()) {
+            $field->addValue('-');
+        }
+    }
+}
+
+sub filterVariables
+{
+    my ($output) = @_;
+
+    # For each deletion:
+    for my $deletion ($output->getDeletions()) {
+
+        # Grab the object name and the group containing it
+        my $objectName = $deletion->getObjectName();
+        my $groupName = $deletion->getGroupName();
+        my $group = $output->grabGroup($groupName);
+        my @newObjects;
+        my @newValues;
+
+        # Ignore objects that match the deletion
+        for my $object ($group->getObjectList()) {
+            push(@newObjects, $object) if ($object->getName() ne $objectName);
+        }
+
+        # Keep the other objects
+        $group->setObjectList(@newObjects);
+    }
+}
+
+sub changeIndexes
+{
+    my ($output, @outputSpecs) = @_;
+    my @newObjectList;
+
+    # Change visible group names, but keep the old internal ones
+    for my $group ($output->getGroupList()) {
+        my $groupName = $group->getName();
+        $groupName =~ s[@.*@][];
+        $group->setName($groupName);
+    }
+
+    # For each group:
+    for my $group ($output->getGroupList()) {
+        my $groupName = $group->getName();
+
+        # For each object in the group:
+        for my $object ($group->getObjectList()) {
+            my $objectName = $object->getName();
+
+            # Remember it for a while
+            push(@newObjectList, $object);
+
+            # See http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=324800
+            # for an explanation of why this must use m{} rather than m[]
+            #
+            # If it uses a field-based index:
+            if ($objectName =~ m{^((.+?)@(.+?)@\[.*\])}) {
+                my ($objectName, $objectPrefix, $fieldName) = ($1, $2, $3);
+
+                # Find the field value
+                my $field = $object->grabField($fieldName);
+                my ($fieldValue) = $field->getValues();
+                $fieldValue =~ s[[^\w-]][_]g;
+
+                # Use it to replace the original index
+                my $newObjectName = "${objectPrefix}[${fieldValue}]";
+                $object->setName($newObjectName);
+                my @newValues;
+            }
+        }
+
+        # Replace the old object list
+        $group->setObjectList(@newObjectList);
+    }
+}
+
+sub grabDirName
+{
+    my ($output) = @_;
+
+    # Grab the current directory name
+    my $dirName = $output->getDirName();
+    if (defined($dirName)) {
+        return $dirName;
+    }
+
+    # If it's not set, try the environment
+    my $dirName = $ENV{"AWSAPI_FILE_DIR"};
+
+    # If it's not there either, create a new directory
+    if ($dirName eq "") {
+        $dirName = tempdir(".awsapi.XXXXXXXX", DIR => $ENV{"HOME"});
+        open(TMP, ">$dirName/.tmp") || stop("could not create .tmp file");
+        close(TMP);
+    }
+
+    # Remember the name for future calls
+    $output->setDirName($dirName);
+    return $dirName;
+}
+
+sub writeFileText
+{
+    my ($output, $fileName, @text) = @_;
+
+    # Find or create the directory
+    my $dirName = grabDirName($output);
+
+    # Create an empty executable file
+    open(FILE, ">$dirName/$fileName") || stop("could not create $fileName");
+    chmod(0700, "$dirName/$fileName");
+    print FILE @text;
+    close(FILE);
+}
+
+sub writeFileValues
+{
+    my ($output, $fileName, @values) = @_;
+
+    # Quote values with whitespace if we have more than one value
+    if (scalar @values > 1) {
+        @values = map { $_ =~ m[\s]? "\"$_\"" : $_ } @values;
+    }
+
+    # Echo individual values in single quotes
+    writeFileText($output, $fileName, "echo '", join("' '", @values), "'\n");
+}
+
+sub cleanFileOutput
+{
+    my ($output) = @_;
+
+    my $currentDirName = grabDirName($output);
+    my $home = $ENV{"HOME"};
+
+    # Grab a list of unused temporary directories
+    opendir(my $dir, $home) || stop("could not open \$HOME");
+    my @dirNames = grep { m[^\.awsapi\.] && -f "$home/$_/.tmp" } readdir($dir);
+    closedir($dir);
+
+    # Loop over all unused temporary directories
+    for my $dirName (@dirNames) {
+        $dirName = "$home/$dirName";
+
+        # We don't want to remove this directory
+        next if ($dirName eq $currentDirName);
+
+        # Delete those that are older than one second
+        my $mtime = (stat($dirName))[9];
+        if ($mtime + 1 < time()) {
+            rmtree($dirName);
+        }
+    }
+}
+
+sub prepareFileOutput
+{
+    my ($output) = @_;
+
+    # For each group: add all object names as values
+    for my $group ($output->getGroupList()) {
+        my @rowNames = map { $_->getName() } $group->getObjectList();
+        for my $row (@rowNames) { $row =~ s{(.*)(\[.*\])}{$1Table$2}; }
+        $group->setValues(@rowNames);
+    }
+
+    # Create redirecting files for each table...
+    for my $group ($output->getGroupList()) {
+        my $basicName = $group->getName(); $basicName =~ s[List$][];
+        writeFileText($output, $basicName, "exec \$$basicName\n");
+
+        # ...and each column within the table
+        for my $fieldName ($group->getHeaders()) {
+            my $columnName = sprintf("%s.%s", $basicName, $fieldName);
+            writeFileText($output, $columnName, "exec \$$columnName\n");
+        }
+    }
+
+    # Create a file of values for each column
+    for my $group ($output->getGroupList()) {
+        my $tableName = $group->getName(); $tableName =~ s[List$][Table];
+        my @objects = $group->getObjectList();
+        for my $header ($group->getHeaders()) {
+            writeFileValues($output, "$tableName.$header",
+                map {$_->grabField($header)->getValues(); } @objects);
+        }
+    }
+
+    # Get a list of all objects in all groups
+    my @objectList = map { $_->getObjectList(); } $output->getGroupList();
+
+    # For each object in the list:
+    for my $object (@objectList) {
+        my $objectName = $object->getName();
+        my @objectValues;
+
+        # Let's see it as a table row here...
+        $objectName =~ s{(.*)(\[.*\])}{$1Table$2};
+
+        # For all fields in the object:
+        for my $field ($object->getFieldList()) {
+            my $fieldName = $field->getName();
+            my $fullName = "$objectName.$fieldName";
+
+            # Add a file for the field
+            writeFileValues($output, $fullName, $field->getValues());
+            push(@objectValues, $field->getValues());
+        }
+
+        # Each field value is also part of the object expansion
+        writeFileValues($output, $objectName, @objectValues);
+    }
+}
+
+sub printFileOutput
+{
+    my ($output) = @_;
+
+    # The entire output will become one line
+    print "eval\n";
+
+    # Quoting gets complicated...
+    my $q = q[\'\"'];
+
+    # Print all simple variables and object groups
+    for my $variable ($output->getVariableList(), $output->getGroupList()) {
+        my @values = map { $_ =~ m[\s]? "$q$_$q" : $_ } $variable->getValues();
+        printf("%s='%s';\n", $variable->getName(), join(' ', @values));
+    }
+
+    # Add an exported loop variable for each group
+    for my $group ($output->getGroupList()) {
+
+        # Add a value if it's the sole result
+        my @values = $group->getValues();
+        my $value = (scalar @values == 1)? $values[0] : "";
+
+        # Always export the variable
+        my $name = $group->getName();
+        $name =~ s[List$][];
+        print "export $name=\"$value\";\n";
+    }
+
+    # Find the name of our file directory
+    my $dirName = $output->getDirName();
+    $dirName =~ s[\.tmp$][];
+
+    # Print the directory info if necessary
+    if ($dirName && $dirName ne $ENV{"AWSAPI_FILE_DIR"}) {
+        print "export AWSAPI_FILE_DIR=\"$dirName\";\n";
+        print "trap \"rm -rf \\\"$dirName\\\"\" EXIT;\n";
+        print "PATH=\"\$PATH:\$AWSAPI_FILE_DIR\";\n";
+        print "rm $dirName/.tmp;\n";
+    }
+}
+
+sub printOutput
+{
+    my ($output) = @_;
+
+    cleanFileOutput($output);
+    prepareFileOutput($output);
+    printFileOutput($output);
+}
+
+sub adjustWidths
+{
+    my ($widthArray, @values) = @_;
+
+    my $index = -1;
+
+    for my $value (@values) {
+        my $width = length($value);
+        if ($width > $$widthArray[++$index]) {
+            $$widthArray[$index] = $width;
+        }
+    }
+}
+
+sub printTableRow
+{
+    my ($widthArray, @values) = @_;
+
+    my $format = join('', map { "%-".($_+2)."s" } @$widthArray);
+    print "printf \"$format\\n\"", (map { " \"$_\"" } @values), ";\n";
+}
+
+sub printTables
+{
+    my ($output) = @_;
+
+    my @widthArray;
+
+    # For each group of objects:
+    for my $group ($output->getGroupList()) {
+
+        # Loop over all values to find the column widths
+        adjustWidths(\@widthArray, $group->getHeaders());
+        for my $object ($group->getObjectList()) {
+            my @values = map { $_->getValues(); } $object->getFieldList();
+            adjustWidths(\@widthArray, @values);
+        }
+
+        # Print the table headers
+        print "[ -t 1 ] && printf \"\\033[4m\";\n";
+        printTableRow(\@widthArray, $group->getHeaders());
+        print "[ -t 1 ] && printf \"\\033[m\";\n";
+        my $width; for (@widthArray) { $width += $_ + 2; }
+        print "[ -t 1 ] || echo \"", '-' x $width, "\";\n";
+
+        # Print one line for each object
+        for my $object ($group->getObjectList()) {
+            my @values = map { $_->getValues(); } $object->getFieldList();
+            printTableRow(\@widthArray, @values);
+        }
+
+        # Add some space
+        print "echo;\n";
+    }
+}
+
+### API Support ###############################################################
+
+sub fixS3Params
+{
+    my ($action, $args) = @_;
+
+    if ($action eq 'ListAllMyBuckets') {
+        return;
+    }
+
+    if ($action eq 'CreateBucket'
+    ||  $action eq 'DeleteBucket'
+    ||  $action eq 'GetBucketAccessControlPolicy'
+    ||  $action eq 'GetBucketLoggingStatus') {
+        if (!exists($args->{'Bucket'})) { stop("missing param: Bucket"); }
+        return;
+    }
+
+    if ($action eq 'ListBucket') {
+        if (!exists($args->{'Bucket'})) { stop("missing param: Bucket"); }
+        if (!exists($args->{'Prefix'})) { $args->{'Prefix'} = ""; }
+        if (!exists($args->{'Marker'})) { $args->{'Marker'} = ""; }
+        if (!exists($args->{'MaxKeys'})) { $args->{'MaxKeys'} = 1000; };
+        return;
+    }
+
+    stop("Action not yet supported");
+}
+
+sub getS3Order
+{
+    my ($param) = @_;
+    my $index = 0;
+
+    my @nameList = (
+      'Bucket',
+      'Prefix',
+      'Marker',
+      'MaxKeys',
+
+      'AWSAccessKeyId',
+      'Timestamp',
+      'Signature',
+    );
+
+    for my $name (@nameList) {
+        if ($index++, $param eq $name) {
+            return $index;
+        }
+    }
+
+    stop("Unknown S3 parameter: $param");
+}
+
+sub byS3Order
+{
+    return getS3Order($a) <=> getS3Order($b);
+}
+
+sub s3Call
+{
+    my ($url, $version, $action, $args) = @_;
+
+    # The SOAP API ignores all parameter names
+    fixS3Params($action, $args);
+
+    # Add general authentication info
+    my $timeStamp = strftime("%FT%T.000Z", gmtime);
+    $$args{AWSAccessKeyId} = $accessKeyId;
+    $$args{Timestamp} = $timeStamp;
+
+    # Add the signature
+    my $stringToSign = "AmazonS3${action}${timeStamp}";
+    my $signature = base64(HMAC($secretAccessKey, $stringToSign));
+    $$args{Signature} = $signature;
+
+    # Start the SOAP method call
+    my $soapNameSpace = "http://schemas.xmlsoap.org/soap/envelope/";
+    my $request = "<Envelope xmlns=\"$soapNameSpace\">\n  <Body>\n";
+    my $s3NameSpace= "http://doc.s3.amazonaws.com/$version";
+    $request .= "    <$action xmlns=\"$s3NameSpace\">\n";
+
+    # Add all arguments
+    for my $argName (sort byS3Order (keys(%$args))) {
+        $request .= "      <$argName>$$args{$argName}</$argName>\n";
+    }
+
+    # Finish the call
+    $request .= "    </$action>\n  </Body>\n</Envelope>\n";
+
+    # Prepare the data
+    my ($file, $fileName) = tempfile(); print $file $request; close(FILE);
+    my $headers = "--header Content-Type:text/xml --header SOAPAction:$action";
+
+    # Debug code
+    if ($debugging) {
+        open(REQUEST, ">request.xml") || die("Could not write response.xml");
+        print REQUEST $request;
+        close(REQUEST);
+    }
+
+    # Let curl handle the request and grab all XML output
+    return `curl -s --url ${url} $headers --data \@$fileName; rm $fileName`;
+}
+
+sub genericCall
+{
+    my ($url, $version, $action, $args) = @_;
+
+    # Parse the base URL
+    if ($url !~ m[https?://([^/]+)(.*)]) {
+        die("Weird url ($url)");
+    }
+
+    # Extract the host and path
+    my ($host, $path, @params) = ($1, $2);
+    if ($path eq '') { $path = '/'; }
+
+    # Add extra parameters
+    $$args{Version} ||= $version;
+    $$args{Action} = $action;
+    $$args{AWSAccessKeyId} = $accessKeyId;
+    $$args{Timestamp} = strftime("%FT%TZ", gmtime);
+    $$args{SignatureMethod} = 'HmacSHA1';
+    $$args{SignatureVersion} = 2;
+
+    # Extract the parameters
+    for my $argName (sort(keys(%$args))) {
+        push(@params, urlEncode($argName) . '=' . urlEncode($$args{$argName}));
+    }
+
+    # Sign the query
+    my $query = join('&', @params);
+    my $stringToSign = "POST\n\L${host}\E\n${path}\n${query}";
+    my $signature = base64(HMAC($secretAccessKey, $stringToSign));
+    $query = join('&', $query, "Signature=" . urlEncode($signature));
+
+    # Let curl handle the query and grab all XML output
+    my ($file, $fileName) = tempfile(); print $file $query; close(FILE);
+    return `curl -s --url $url --data \@$fileName; rm $fileName`;
+}
+
+sub awsCall
+{
+    my ($prefix, $url, $version, $action, $args) = @_;
+
+    my $xml;
+
+    # Use SOAP for S3, which has no query API
+    if ("\L$prefix" eq 's3') {
+        $url =~ s[/$][]; $url .= "/soap";
+        $xml = s3Call($url, $version, $action, $args);
+    }
+
+    # Use the query API for anything else
+    else {
+        $xml = genericCall($url, $version, $action, $args);
+    }
+
+    # Debug code
+    if ($debugging) {
+        open(RESPONSE, ">response.xml") || die("Could not write response.xml");
+        print RESPONSE $xml;
+        close(RESPONSE);
+    }
+
+    return parseXml($xml);
+}
+
+### Main Script ###############################################################
+
+my $options = handleOptions();
+
+# The convention is a bit unusual...
+if (-t STDOUT) {
+    print STDERR "awsapi: should be called as \"\$(awsapi ...)\" ";
+    print STDERR "or \"awsapi --help\"\n";
+    print STDERR "If you REALLY want to see the raw output, try:\n";
+    print STDERR "    \"awsapi ... | cat\"\n\n";
+    exit(1);
+}
+
+# Read settings and fix the command line
+readSettings();
+expandBraces();
+splitArgs();
+combineArgs();
+
+# Parse the command line arguments
+my ($prefix, $url, $version, $action) = parseAction(\@ARGV);
+my @outputSpecs = parseOutputSpecs(@ARGV);
+my $queryArgs = parseQueryArgs(@ARGV);
+my $output = new Object();
+
+# Try after 0, 1, 3, 6, 10, 20, 30 seconds, etc.
+my @delays = (1,2,3,4,10);
+my $delay = 10;
+
+attempt:
+{
+    # Make the API call
+    print STDERR "Calling $url\n" if ($debugging);
+    my $response = awsCall($prefix, $url, $version, $action, $queryArgs);
+    print STDERR '-' x 79, "\n" if ($debugging);
+    handleErrors($response);
+
+    # For each output spec:
+    for my $outputSpec (@outputSpecs) {
+
+        # Find the results matching this spec
+        my @results = findJoinedResults($output, $outputSpec, $response);
+
+        # Add the default if an expected result is missing
+        @results = addDefaults($outputSpec, @results);
+
+        # Apply all the filters
+        @results = filterResults($output, $outputSpec, @results);
+
+        # Check that all values are as expected
+        if (!verifyResults($outputSpec, @results)) {
+            if (@delays) { $delay = shift(@delays); }
+            sleep($delay); $output = new Object();
+            redo attempt;
+        }
+
+        # Only save here; don't print more than once
+        prepareOutput($output, $outputSpec, @results);
+        completeOutput($output, $outputSpec, @results);
+    }
+}
+
+# Remove deleted objects
+filterVariables($output);
+
+# Apply index modifications
+changeIndexes($output, @outputSpecs);
+
+# Print everything that remains
+printOutput($output);
+
+# Add tables if necessary
+if ($options->hasTable()) {
+    printTables($output);
+}
+
+exit(0);
+
+###############################################################################
+
+__END__
+
+=head1 NAME
+
+awsapi - Low-level Bourne shell access to Amazon EC2 etc.
+
+=head1 SYNOPSIS
+
+awsapi [options] <action> [parameters]
+
+=head1 DESCRIPTION
+
+B<awsapi> makes it easy for Bourne shell scripts to call the low-level API
+of Amazon EC2 and other services that follow the same call conventions.
+It knows little about the API, but sends given actions and parameters
+exactly as given, in the hope that users will know all the details.
+
+=head2 Requests
+
+A typical shell command would look something like this:
+
+    $(awsapi ec2.RunInstances ImageId=$imageId MinCount=1 MaxCount=1 \
+        instanceId:instancesSet.1.instanceId)
+
+The action I<ec2.RunInstances> consists of a prefix (I<ec2>), which is used
+to select API version and endpoint for the call, and an action name
+(I<RunInstances>) which is passed directly to the underlying API.
+
+If the action prefix is I<xyz>, an XYZ_API_VERSION environment variable
+must be set to a corresponding API version. The XYZ_ENDPOINT may be
+set to a specific URL. If not set explicitly, it will usually default
+to https://xyz.amazonaws.com/, which is often what you want anyway.
+
+Request parameters are simply given as I<name>=I<value> pairs, as expected.
+Common request parameters (I<Action>, I<Version>, I<AWSAccessKeyId>, I<Timestamp>,
+I<Signature>, I<SignatureMethod>, and I<SignatureVersion>) are automatically
+added to each query.
+
+=head2 Responses
+
+The surrounding $(...) is because B<awsapi> will print commands on stdout
+that it expects the calling shell to execute. Values are returned to
+the caller by setting variables that way. The second line in the above
+example says that our local shell variable I<instanceId> should be set
+to the value returned in I<instancesSet.1.instanceId>. The I<instanceId:> part
+is optional in this case, since the name of the response element is
+used by default, but sometimes you may have a better name in mind.
+
+Use the C<.n.> notation to collect multiple values into a single list:
+
+    $(awsapi ec2.DescribeInstances Filter.1.Name=instance-state-name \
+        Filter.1.Value.1=running ipAddressList:reservationSet.n. \
+            instancesSet.n.ipAddress)
+
+As seen here, you may break long response elements after any dot and
+continue on the next line. Collected values are put in space-separated
+lists of items, suitable for use in a shell C<for> loop.
+
+=head2 "Objects"
+
+The C<+> notation gives you a separate "object" for each combination of
+values matched by one or more C<.n.> specs:
+
+    $(awsapi ec2.DescribeInstances \
+        instance+state: \
+            reservationSet.n.instancesSet.n.instanceState.name \
+        instance+ \
+            reservationSet.n.instancesSet.n.ipAddress)
+
+This returns an I<instanceList> shell variable, which contains one value
+for each instance: instanceTable[1.1], instanceTable[1.2], etc. You can
+then loop over this list and expand the value of each individual field:
+
+    for instance in $instanceList; do
+        printf "%-10s %-16s\n" $(instance.state) $(instance.ipAddress)
+    done
+
+There is a catch, though. This convenient notation didn't come out of
+nowhere, and you may need to understand some details. In this example,
+F<instance.state> is the name of a temporary shell script, which reads the
+exported I<instance> variable before printing a suitable value on stdout.
+Therefore, the name of your loop variable is not really negotiable.
+
+=head2 Brace Expansion
+
+The previous I<DescribeInstances> example still looks way too complicated.
+In practice, it would probably be written like this instead:
+
+    INSTANCES=instance+reservationSet.n.instancesSet.n
+    $(awsapi ec2.DescribeInstances $INSTANCES.{ \
+        state:instanceState.name, ipAddress \
+    })
+
+The C<{...}> is similar to a bash-style brace expansion. If you run this
+command in bash(1) and skip some whitespace, B<bash> does the expansion.
+Otherwise, B<awsapi> will do the same thing. In any case, C<a.{b,c}> will
+end up being the same as C<a.b a.c>. In this example, the C<state:> part
+will end up in the middle of the output spec, like this:
+
+    instance+reservationSet.n.instancesSet.n.state:instanceState.name
+
+This is OK. The colon is really just a renaming operator, so in this
+case it means that C<reservationSet.n.instancesSet.n.instanceState.name>
+works as if it had been named C<reservationSet.n.instancesSet.n.state>.
+
+=head2 Filtering
+
+You can add a display filter to your queries like this:
+
+    $(awsapi ec2.DescribeInstances $INSTANCES.{ \
+        state:instanceState.name eq running, ipAddress \
+    })
+
+In this case, the I<instanceList> will only contain instances that were in
+fact running when the query was made. The six filtering operators are what
+you may expect: C<eq>, C<ne>, C<lt>, C<gt>, C<le>, and C<ge> correspond
+to C operators C<==>, C<!=>, C<E<lt>>, C<E<gt>>, C<E<lt>=>, and C<E<gt>=>,
+but may be used
+unquoted in the shell. Comparison is numeric if both arguments look
+like numbers. Otherwise these operators do a stringwise comparison.
+Fortunately, timestamps in the EC2 API will have alphabetic order.
+
+It is possible to filter for one of many values by using slashes to
+separate the individual values like this:
+
+    $(awsapi ec2.DescribeInstances $INSTANCES.{ \
+        state:instanceState.name, ipAddress eq 192.168.0.1/192.168.0.2 \
+    })
+
+This builds that from the space-separated values of C<$ipAddressList>:
+
+    $(awsapi ec2.DescribeInstances $INSTANCES.{ \
+        state:instanceState.name, ipAddress eq @ipAddressList \
+    })
+
+For clarity, you may also use C<in> instead of C<eq> in this case.
+
+=head2 Default Values
+
+The C<or> filter provides a default value when a result is missing:
+
+    $(awsapi ec2.DescribeSnapshots SnapshotId.1=$snapshotId \
+        snapshotSet.1.progress or "0%")
+
+A newly created EC2 snapshot does not necessarily have any kind of
+progress value, but it's convenient to pretend that it does, since
+B<awsapi> would otherwise complain:
+
+    awsapi: no snapshotSet.1.progress returned
+
+Empty strings will also count as missing results, so you can use the
+default value to replace a response element that exists but is blank.
+
+=head2 Verification
+
+It is often necessary to verify the returned values. For convenience,
+B<awsapi> will do this for you if an expected value is given like this:
+
+    $(awsapi ec2.AssociateAddress PublicIp=$ipAddress \
+        InstanceId=$instanceId status:return := true)
+
+In this case, if the value of response element I<return> is in fact not
+I<true>, B<awsapi> will complain on stderr and print "eval false" to stdout.
+This is the standard behavior for other types of error as well.
+
+Waiting for something to happen is also a common activity. If you give
+multiple expected values, B<awsapi> will repeat the call regularly until
+the final value has been returned. Each time, the returned value must
+match one of the expected values. Otherwise an error is signalled:
+
+    $(awsapi ec2.DescribeVolumes VolumeId.1=$volumeId \
+        volumeSet.1.status := attaching/attached)
+
+There may be a delay before newly created resources are visible for
+further API calls. To avoid annoying complaints about these missing
+resources, you may use a '-' to represent the missing value:
+
+    $(awsapi ec2.DescribeInstances \
+        Filter.1.{ Name="instance-id", Value.1="$instanceId" } \
+        reservationSet.1.instancesSet.1.instanceState.name \
+            := -/pending/running)
+
+=head2 Joining Tables
+
+This is a low-level tool. Each call to B<awsapi> corresponds to a single
+call to the underlying API. However, it is convenient to see the name
+of each returned object, and Amazon EC2 stores names as separate tags.
+
+The solution to this problem would look something like this:
+
+    # Grab the "Name" tags for all "instance" resources
+    $(awsapi ec2.DescribeTags tag@resourceId+tagSet.n.{ \
+        resourceId, resourceType eq instance, key eq Name, name:value \
+    })
+
+    # Include the tag.name result of the first query here
+    $(awsapi --table ec2.DescribeInstances $INSTANCES.{ \
+        instanceId, state:instanceState.name, \
+        ~tag.name@instanceId, ipAddress \
+    })
+
+In the first query, the C<@resourceId> part says that the result should
+be indexed by the value of C<resourceId> (which should be unique), instead
+of using the number matched by C<.n.>, as usual.
+
+The second query uses the C<tag.name> table column that was generated
+by the first query. A value in this column is selected by C<instanceId>,
+which should match some C<resourceId> in the previous query.
+
+The B<--table> option displays this combined result in a pretty way.
+
+=head2 Settings
+
+Your AWS "Secret Access Key" and "Access Key ID" must be stored in a
+secret F<~/.awsapirc> file. Remember to use C<chmod 600 ~/.awsapirc> to
+keep your secrets secret. A sample F<~/.awsapirc> would look like this:
+
+    secretAccessKey: eW91dHViZS5jb20vd2F0Y2g/dj1SU3NKMTlzeTNKSQ==
+    accessKeyId: AKIADQKE4SARGYLE
+
+Furthermore, each script you write should start with one or more lines
+that set the API versions of all relevant services:
+
+    export EC2_API_VERSION="2010-11-15"
+    export SQS_API_VERSION="2009-02-01"
+
+See the EXAMPLES section for a complete example of a shell script.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<--debug>
+
+Enables debugging, which prints extra information to stderr.
+
+=item B<--help>
+
+Prints a brief help message and exits.
+
+=item B<--table>
+
+Prints your query results in a nice table layout.
+
+=item B<--man>
+
+Displays the complete B<awsapi> man page.
+
+=item B<--version>
+
+Displays the date of this B<awsapi> version.
+
+=back
+
+=head1 EXAMPLES
+
+ #!/bin/sh
+ set -e
+
+ ### Script initialization ##################################
+
+ # These are usually needed
+ export EC2_API_VERSION="2010-11-15"
+ METADATA=http://169.254.169.254/latest/meta-data
+ PATH="$(dirname $0):$PATH"
+
+ ### IP address grabbing ####################################
+
+ # Describe the instance we're running on
+ instanceId=$(curl -s "$METADATA/instance-id")
+ $(awsapi ec2.DescribeInstances InstanceId.1=$instanceId \
+     reservationSet.1.instancesSet.1.ipAddress)
+
+ # Print the IP address
+ echo "IP address: $ipAddress"
+
+ ### Volume creation ########################################
+
+ # Create an empty volume and get its ID
+ $(awsapi ec2.CreateVolume AvailabilityZone=us-east-1d \
+     Size=8 volumeId)
+
+ # Wait for the volume to become available
+ $(awsapi ec2.DescribeVolumes VolumeId.1=$volumeId \
+     volumeSet.1.status := creating/available)
+
+ ############################################################
+
+=head1 ENVIRONMENT
+
+The following environment variables should be set when B<awsapi> is used.
+XYZ is a fake prefix that should be replaced by EC2, SQS, etc.
+
+=over 4
+
+=item XYZ_API_VERSION
+
+Used verbatim as the "Version" parameter in API calls. The script
+doesn't really care about versions, but Amazon XYZ may reject your
+requests if you are programming against the wrong version.
+
+=item XYZ_ENDPOINT
+
+Used to set an endpoint URL if https://xyz.amazonaws.com/ is not
+good enough for you. For example, Amazon EC2 will typically need
+https://ec2.eu-west-1.amazonaws.com/ to use the Irish region.
+
+=item AWSAPI_FILE_DIR
+
+The name of a directory containing automatically generated scripts.
+Your first B<awsapi> call will create this directory and also set
+the environment variable. The directory is automatically deleted
+when the current shell exits.
+
+=item HOME
+
+Used to determine the user's home directory, which is where an
+F<.awsapirc> file with the AWS "Secret Access Key" and "Access Key ID"
+should be placed.
+
+=back
+
+=head1 FILES
+
+=over 4
+
+=item F<~/.awsapirc> -- contains your AWS secrets.
+
+This file contains secret data. It should only be accessible by the
+B<awsapi> user, so remember to "chmod 600 ~/.awsapirc" before adding
+your keys. All settings are given as lines of "name: value" pairs.
+The I<secretAccessKey> and I<accessKeyId> settings are required.
+
+=back
+
+=head1 BUGS
+
+Amazon S3 does not have a query API. This version of B<awsapi> has some
+rudimentary code that tries to use SOAP instead, but that support is
+very limited and not expected to help you in any way.
+
+=head1 SEE ALSO
+
+http://aws.amazon.com/documentation/
+
+=head1 AUTHOR
+
+Henrik Gulbrandsen <henrik@gulbra.net>
+
+=cut
+
+###############################################################################
