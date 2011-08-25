@@ -18,7 +18,7 @@ wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/
 wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/gregburek-env/local.rc -O ~/.localrc
 
 # Setup RVM and ruby
-bash < <(wget -qO- https://rvm.beginrescueend.com/install/rvm)
+bash < <(wget https://rvm.beginrescueend.com/install/rvm -O -)
 source ~/.localrc
 echo 'gem: --no-ri --no-rdoc' >> ~/.gemrc
 rvm install 1.8.7
