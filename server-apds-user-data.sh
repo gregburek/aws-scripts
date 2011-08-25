@@ -10,13 +10,6 @@ exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 set -e -x
 export DEBIAN_FRONTEND=noninteractive
 
-
-function die()
-{
-	echo -e "$@" >> /dev/console
-	exit 1
-}
-
 sudo apt-add-repository ppa:awstools-dev/awstools
 
 sudo aptitude -yq update && sudo aptitude -yq safe-upgrade
