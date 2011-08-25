@@ -25,7 +25,7 @@ rvm install 1.8.7
 rvm use 1.8.7 --default
 
 # Setup Janus and Solarized for vim
-curl https://raw.github.com/carlhuda/janus/master/bootstrap.sh -o - | sh
+bash < <(wget https://raw.github.com/carlhuda/janus/master/bootstrap.sh -O -)
 #curl https://github.com/posterous/vim/raw/master/vimrc.local > ~/.vimrc.local
 
 # Setup Oh My zsh! shell
@@ -37,7 +37,7 @@ git clone git://github.com/robbyrussell/oh-my-zsh.git ~/.oh-my-zsh
 ln -s ~/.zsh/zshrc ~/.zshrc
 
 # Setup git-flow
-wget --no-check-certificate -q -O - https://github.com/nvie/gitflow/raw/develop/contrib/gitflow-installer.sh | sudo sh
+sudo bash < <(wget --no-check-certificate -q -O - https://github.com/nvie/gitflow/raw/develop/contrib/gitflow-installer.sh )
 #sudo wget -O /usr/share/zsh/functions/Completion/Unix/_git http://zsh.git.sourceforge.net/git/gitweb.cgi?p=zsh/zsh;a=blob_plain;f=Completion/Unix/Command/_git;hb=HEAD
 
 # Setup gitconfig
