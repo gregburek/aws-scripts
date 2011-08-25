@@ -1,3 +1,4 @@
 if [[ -z "$TMUX" ]]; then
         tmux att
 fi
+[[ -s "/home/gregburek/.rvm/scripts/rvm" ]] && source "/home/gregburek/.rvm/scripts/rvm"

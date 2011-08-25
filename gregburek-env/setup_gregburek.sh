@@ -13,8 +13,19 @@ cat ~/.ssh/airy-greg.pub >> ~/.ssh/authorized_keys
 chmod 700 ~/.ssh;
 chmod 600 ~/.ssh/authorized_keys
 
+# Setup tmux 
+wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/gregburek-env/tmux.conf -O ~/.tmux.conf
+wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/gregburek-env/local.rc -O ~/.localrc
+
+# Setup RVM and ruby
+bash < <(curl -s https://rvm.beginrescueend.com/install/rvm)
+source ~/.localrc
+echo 'gem: --no-ri --no-rdoc' >> ~/.gemrc
+rvm install 1.8.7
+rvm use 1.8.7 --default
+
 # Setup Janus and Solarized for vim
-wget --no-check-certificate -q -O - https://github.com/gregburek/janus/raw/master/bootstrap.sh | sh
+curl https://raw.github.com/carlhuda/janus/master/bootstrap.sh -o - | sh
 #curl https://github.com/posterous/vim/raw/master/vimrc.local > ~/.vimrc.local
 
 # Setup Oh My zsh! shell
@@ -24,10 +35,6 @@ wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/
 wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/gregburek-env/zsh/aliases -O ~/.zsh/aliases
 git clone git://github.com/robbyrussell/oh-my-zsh.git ~/.oh-my-zsh
 ln -s ~/.zsh/zshrc ~/.zshrc
-
-# Setup tmux 
-wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/gregburek-env/tmux.conf -O ~/.tmux.conf
-wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/gregburek-env/local.rc -O ~/.localrc
 
 # Setup git-flow
 wget --no-check-certificate -q -O - https://github.com/nvie/gitflow/raw/develop/contrib/gitflow-installer.sh | sudo sh
