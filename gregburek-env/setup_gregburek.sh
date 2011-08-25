@@ -44,11 +44,12 @@ wget --no-check-certificate -q -O - https://github.com/nvie/gitflow/raw/develop/
 wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/gregburek-env/git-config -O ~/.gitconfig
 
 # Setup python tools
+sudo easy_install pip
 sudo easy_install virtualenv
-
 # echo 'export WORKON_HOME=$HOME/.virtualenvs' >> ~/.zprofile
 # echo 'source /usr/local/bin/virtualenvwrapper.sh' >> ~/.zprofile
 
 # Setup reminder 
 echo 'echo "Remember to run ssh-keygen -t rsa -C \"your_email@youremail.com\""' >> ~/.zprofile
+
 
