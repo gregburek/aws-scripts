@@ -38,7 +38,7 @@ ln -s ~/.zsh/zshrc ~/.zshrc
 
 # Setup git-flow
 wget --no-check-certificate -q -O - https://github.com/nvie/gitflow/raw/develop/contrib/gitflow-installer.sh | sudo sh
-sudo wget -O /usr/share/zsh/functions/Completion/Unix/_git http://zsh.git.sourceforge.net/git/gitweb.cgi?p=zsh/zsh;a=blob_plain;f=Completion/Unix/Command/_git;hb=HEAD
+#sudo wget -O /usr/share/zsh/functions/Completion/Unix/_git http://zsh.git.sourceforge.net/git/gitweb.cgi?p=zsh/zsh;a=blob_plain;f=Completion/Unix/Command/_git;hb=HEAD
 
 # Setup gitconfig
 wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/gregburek-env/git-config -O ~/.gitconfig
