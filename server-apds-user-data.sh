@@ -36,9 +36,9 @@ echo "gregburek ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 # mkdir /opt/
 sudo chown gregburek:gregburek /opt
 
-su - gregburek -c "bash < <(wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/gregburek-env/setup_gregburek.sh -O -)"
+sudo su - gregburek -c "bash < <(wget --no-check-certificate https://github.com/gregburek/aws-scripts/raw/master/gregburek-env/setup_gregburek.sh -O -)"
 
-passwd -e gregburek
+sudo passwd -e gregburek
 exit 0
 
 
